@@ -1,0 +1,127 @@
+services:
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:libtorrentv1
+    container_name: qbittorrent
+    environment:
+      - PUID=${USER_ID}
+      - PGID=${GROUP_ID}
+      - TZ=${TIMEZONE}
+      - WEBUI_PORT=8080
+      - DOCKER_MODS=ghcr.io/gabe565/linuxserver-mod-vuetorrent
+    volumes:
+      - ${CONFIG_ROOT:-.}/qbittorrent:/config
+      - ${DOWNLOAD_ROOT}:/data/torrents
+    restart: always
+    healthcheck:
+      # Container may fail if the PIA's token expired, so mark as unhealthy when there is no internet connection
+      # see: https://github.com/qdm12/gluetun/issues/641#issuecomment-933856220
+      test:
+        ["CMD", "curl", "--fail", "http://127.0.0.1:8080", "https://google.com"]
+      interval: 30s
+      retries: 10
+    network_mode: "service:vpn"
+    depends_on:
+      vpn:
+        condition: service_healthy
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.qbittorrent.rule=(Host(`${HOSTNAME}`) && PathPrefix(`/qbittorrent`))
+      - traefik.http.routers.qbittorrent.tls=true
+      - traefik.http.routers.qbittorrent.tls.certresolver=myresolver
+      - traefik.http.services.qbittorrent.loadbalancer.server.port=8080
+      - traefik.http.routers.qbittorrent.middlewares=qbittorrent-strip-slash,qbittorrent-stripprefix
+      # https://github.com/qbittorrent/qBittorrent/issues/5693#issuecomment-552146296
+      - traefik.http.middlewares.qbittorrent-stripprefix.stripPrefix.prefixes=/qbittorrent
+      # https://community.traefik.io/t/middleware-to-add-the-if-needed/1895/19
+      - traefik.http.middlewares.qbittorrent-strip-slash.redirectregex.regex=(^.*\/qbittorrent$$)
+      - traefik.http.middlewares.qbittorrent-strip-slash.redirectregex.replacement=$$1/
+      - traefik.http.middlewares.qbittorrent-strip-slash.redirectregex.permanent=false
+      #- com.centurylinklabs.watchtower.depends-on=/vpn
+      - homepage.group=Download
+      - homepage.name=qBittorrent
+      - homepage.icon=qbittorrent.png
+      - homepage.href=/qbittorrent
+      - homepage.description=Bittorrent client
+      - homepage.weight=2
+      - homepage.widget.type=qbittorrent
+      - homepage.widget.url=http://vpn:8080
+      - homepage.widget.username=${QBITTORRENT_USERNAME}
+      - homepage.widget.password=${QBITTORRENT_PASSWORD}
+  vpn:
+    image: ghcr.io/thrnz/docker-wireguard-pia:latest
+    container_name: vpn
+    volumes:
+      - ${CONFIG_ROOT:-.}/pia:/pia
+      - ${CONFIG_ROOT:-.}/pia-shared:/pia-shared
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    environment:
+      - LOC=${PIA_LOCATION}
+      - USER=${PIA_USER}
+      - PASS=${PIA_PASS}
+      - QBT_USER=${QBITTORRENT_USERNAME}
+      - QBT_PASS=${QBITTORRENT_PASSWORD}
+      - LOCAL_NETWORK=${PIA_LOCAL_NETWORK}
+      - PORT_FORWARDING=1
+      - PORT_PERSIST=1
+      - PORT_SCRIPT=/pia-shared/portupdate-qbittorrent.sh
+      - FIREWALL=0
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+      - net.ipv6.conf.default.disable_ipv6=1
+      - net.ipv6.conf.all.disable_ipv6=1
+      - net.ipv6.conf.lo.disable_ipv6=1
+    healthcheck:
+      test: ping -c 1 www.google.com || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: always
+  unpackerr:
+    image: ghcr.io/unpackerr/unpackerr:latest
+    container_name: unpackerr
+    volumes:
+      - ${DOWNLOAD_ROOT}:/data/torrents
+    restart: always
+    user: ${USER_ID}:${GROUP_ID}
+    environment:
+      - TZ=${TIMEZONE}
+      - UN_SONARR_0_URL=http://sonarr:8989/sonarr
+      - UN_SONARR_0_API_KEY=${SONARR_API_KEY}
+      - UN_RADARR_0_URL=http://radarr:7878/radarr
+      - UN_RADARR_0_API_KEY=${RADARR_API_KEY}
+    security_opt:
+      - no-new-privileges:true
+  sabnzbd:
+    image: lscr.io/linuxserver/sabnzbd:latest
+    container_name: sabnzbd
+    environment:
+      - PUID=${USER_ID}
+      - PGID=${GROUP_ID}
+      - TZ=${TIMEZONE}
+    volumes:
+      - ${CONFIG_ROOT:-.}/sabnzbd:/config
+      - ${DATA_ROOT}:/data
+    restart: always
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.sabnzbd.rule=(Host(`${HOSTNAME}`) && PathPrefix(`/sabnzbd`) || PathPrefix(`/sabnzbd`))
+      - traefik.http.routers.sabnzbd.tls=true
+      - traefik.http.routers.sabnzbd.tls.certresolver=myresolver
+      - traefik.http.services.sabnzbd.loadbalancer.server.port=8080
+      - homepage.group=Download
+      - homepage.name=Sabnzbd
+      - homepage.icon=sabnzbd.png
+      - homepage.href=/sabnzbd
+      - homepage.description=Usenet
+      - homepage.weight=3
+      - homepage.widget.type=sabnzbd
+      - homepage.widget.url=http://sabnzbd:8080/sabnzbd
+      - homepage.widget.key=${SABNZBD_API_KEY}
+    profiles:
+      - sabnzbd
+
+networks:
+  default:
+    name: docker-compose-nas
